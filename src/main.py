@@ -15,57 +15,45 @@ from DictPersistJSON import DictPersistJSON
 from BitBucketuAPI import BitBucketuAPI
 
 
-def analyze_open_pulls(data):
-    pending = []
-    if "values" in data:
-        for current in data["values"]:
-            if current["state"] == "OPEN":
-                pending.append((current["title"], current["links"]["html"]["href"]))
-    return pending
-
-
 def analyze_comments(data):
-    events = []
     max_time = None
-    if "values" in data:
-        for current in data["values"]:
-            if "comment" in current:  # Yes there are comments on this pull
-                try:
-                    # Retrieve some useful data from API response
-                    evt = {"pull_title": current["comment"]["pullrequest"]["title"],
-                           "pull_link": current["comment"]["pullrequest"]["links"]["html"]["href"],
-                           "comment_user_name": current["comment"]["user"]["display_name"],
-                           "comment_user_link": current["comment"]["user"]["links"]["html"]["href"],
-                           "text_content": current["comment"]["content"]["raw"],
-                           "comment_link": current["comment"]["links"]["html"]["href"],
-                           "create_date": datetime.datetime.fromisoformat(current["comment"]["created_on"]),
-                           "update_date": datetime.datetime.fromisoformat(current["comment"]["updated_on"])}
+    for current in data:
+        if "comment" in current:  # Yes there are comments on this pull
+            try:
+                # Retrieve some useful data from API response
+                evt = {"pull_title": current["comment"]["pullrequest"]["title"],
+                       "pull_link": current["comment"]["pullrequest"]["links"]["html"]["href"],
+                       "comment_user_name": current["comment"]["user"]["display_name"],
+                       "comment_user_link": current["comment"]["user"]["links"]["html"]["href"],
+                       "text_content": current["comment"]["content"]["raw"],
+                       "comment_link": current["comment"]["links"]["html"]["href"],
+                       "create_date": datetime.datetime.fromisoformat(current["comment"]["created_on"]),
+                       "update_date": datetime.datetime.fromisoformat(current["comment"]["updated_on"])}
 
-                    # if comment is posted after a predefined time it's a NEW comment
-                    if evt["create_date"] > PERSISTENT_STORAGE["last_time"]:
-                        evt["update"] = False
-                        log.info("New Comment.")
+                # if comment is posted after a predefined time it's a NEW comment
+                if evt["create_date"] > PERSISTENT_STORAGE["last_time"]:
+                    evt["update"] = False
+                    log.info("New Comment.")
 
-                    # if comment is edited after a predefined time it's an UPDATED (aka EDITED) comment
-                    elif evt["update_date"] > PERSISTENT_STORAGE["last_time"]:
-                        evt["update"] = True
-                        log.info("Updated Comment.")
-                    else:
-                        # ignore this comment it's old
-                        continue
-                    # move forward the time indicator to the latest message elaborated
-                    if max_time is None or evt["create_date"] > max_time:
-                        max_time = evt["create_date"]
-                    if max_time is None or evt["update_date"] > max_time:
-                        max_time = evt["update_date"]
-                    events.append(evt)
-                except:
-                    log.error("Exception", exc_info=True)
+                # if comment is edited after a predefined time it's an UPDATED (aka EDITED) comment
+                elif evt["update_date"] > PERSISTENT_STORAGE["last_time"]:
+                    evt["update"] = True
+                    log.info("Updated Comment.")
+                else:
+                    # ignore this comment it's old
                     continue
-        # if new comments has been elaborated move forward the time indicator
-        if max_time:
-            PERSISTENT_STORAGE["last_time"] = max_time
-    return events
+                # move forward the time indicator to the latest message elaborated
+                if max_time is None or evt["create_date"] > max_time:
+                    max_time = evt["create_date"]
+                if max_time is None or evt["update_date"] > max_time:
+                    max_time = evt["update_date"]
+                yield evt
+            except:
+                log.error("Exception", exc_info=True)
+                continue
+    # if new comments has been elaborated move forward the time indicator
+    if max_time:
+        PERSISTENT_STORAGE["last_time"] = max_time
 
 
 def reminder_loop():
@@ -89,20 +77,22 @@ def reminder_loop():
             try:
                 # Generate Reminder text
                 text = ""
-                user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
-                if "values" in user_repos:
-                    for current_repo in user_repos["values"]:
-                        api_res = API.get_pulls(current_settings["bitbucket"]["repository"]["user"],
-                                                current_repo["name"])
-                        pending = analyze_open_pulls(api_res)
-                        if len(pending) > 0:
-                            if text == "":
-                                text += "Daily reminder\n"
-                            text += "Pending pull requests for {0}/{1}\n".format(
-                                current_settings["bitbucket"]["repository"]["user"],
-                                current_repo["name"])
-                            for p_title, p_url in pending:
-                                text += ">[{0}]({1})\n".format(p_title, p_url)
+                pending = []
+                for current_repo in API.get_repositories(current_settings["bitbucket"]["repository"]["user"]):
+                    # Analyze_open_pulls
+                    for current_pull in API.get_pulls(current_settings["bitbucket"]["repository"]["user"],
+                                                      current_repo["name"]):
+                        if current_pull["state"] == "OPEN":
+                            pending.append((current_pull["title"], current_pull["links"]["html"]["href"]))
+
+                    if len(pending) > 0:
+                        if text == "":
+                            text += "Daily reminder\n"
+                        text += "Pending pull requests for {0}/{1}\n".format(
+                            current_settings["bitbucket"]["repository"]["user"],
+                            current_repo["name"])
+                        for p_title, p_url in pending:
+                            text += ">[{0}]({1})\n".format(p_title, p_url)
 
                 if text != "":
                     for user_uid in users_waiting:
@@ -122,53 +112,50 @@ def reminder_loop():
 def activity_monitor_loop():
     while True:
         try:
-            user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
-            if "values" in user_repos:
-                for current_repo in user_repos["values"]:
-                    current_repo_pulls = API.get_pulls(current_repo["owner"]["username"], current_repo["name"])
-                    if "values" in current_repo_pulls:
-                        for current_pull in current_repo_pulls["values"]:
-                            try:
-                                pull_author_username = current_pull["author"]["username"]
-                                activity = API.get_pull_activity(current_repo["owner"]["username"],
-                                                                 current_repo["name"],
-                                                                 current_pull["id"])
-                                for event in analyze_comments(activity):
-                                    if current_settings["ignore_comment_updates"] and event["update"]:
-                                        # Ignore edit comments
-                                        continue
-                                    kind = "Edited his comment" if event["update"] else "commented"
-                                    msg_date = event["create_date"] if event["update"] else event["update_date"]
-                                    # There's a bug on the render side than doesn't render markdown correctly
-                                    # if more than one link is on the same line
-                                    # Dirty Fix here: |^| \n
-                                    text = "[{0}]({1})\n" \
-                                           "{2} on [{3}/{4}]({6})\n" \
-                                           "{7}\n" \
-                                           "[View Comment]({8})\n" \
-                                           "{9}".format(event["comment_user_name"], event["comment_user_link"],
-                                                        kind,
-                                                        current_settings["bitbucket"]["repository"]["user"],
-                                                        current_repo["name"],
-                                                        event["pull_title"],
-                                                        event["pull_link"],
-                                                        event["text_content"],
-                                                        event["comment_link"],
-                                                        msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
-                                    # Send Message
-                                    user_peer = None
-                                    try:
-                                        user_peer = bot.users.find_user_outpeer_by_nick(pull_author_username)
-                                    except:
-                                        log.error("User_id of {0} not found".format(pull_author_username))
-
-                                    if user_peer:
-                                        bot.messaging.send_message(user_peer, text)
-
-                                time.sleep(current_settings["sleep_time_secs"])
-                            except:
-                                log.error("Exception", exc_info=True)
+            for current_repo in API.get_repositories(current_settings["bitbucket"]["repository"]["user"]):
+                for current_pull in API.get_pulls(current_repo["owner"]["username"], current_repo["name"]):
+                    try:
+                        pull_author_username = current_pull["author"]["username"]
+                        # API CALL Limited to 1 Page (for recent events)
+                        activity = API.get_pull_activity(current_repo["owner"]["username"],
+                                                         current_repo["name"],
+                                                         current_pull["id"], 1)
+                        for event in analyze_comments(activity):
+                            if current_settings["ignore_comment_updates"] and event["update"]:
+                                # Ignore edit comments
                                 continue
+                            kind = "Edited his comment" if event["update"] else "commented"
+                            msg_date = event["create_date"] if event["update"] else event["update_date"]
+                            # There's a bug on the render side than doesn't render markdown correctly
+                            # if more than one link is on the same line
+                            # Dirty Fix here: |^| \n
+                            text = "[{0}]({1})\n" \
+                                   "{2} on [{3}/{4}]({6})\n" \
+                                   "{7}\n" \
+                                   "[View Comment]({8})\n" \
+                                   "{9}".format(event["comment_user_name"], event["comment_user_link"],
+                                                kind,
+                                                current_settings["bitbucket"]["repository"]["user"],
+                                                current_repo["name"],
+                                                event["pull_title"],
+                                                event["pull_link"],
+                                                event["text_content"],
+                                                event["comment_link"],
+                                                msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
+                            # Send Message
+                            user_peer = None
+                            try:
+                                user_peer = bot.users.find_user_outpeer_by_nick(pull_author_username)
+                            except:
+                                log.error("User_id of {0} not found".format(pull_author_username))
+
+                            if user_peer:
+                                bot.messaging.send_message(user_peer, text)
+
+                        time.sleep(current_settings["sleep_time_secs"])
+                    except:
+                        log.error("Exception", exc_info=True)
+                        continue
         except:
             log.error("Exception", exc_info=True)
             continue
