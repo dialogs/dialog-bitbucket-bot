@@ -15,22 +15,6 @@ from DictPersistJSON import DictPersistJSON
 from BitBucketuAPI import BitBucketuAPI
 
 
-def get_user_uid_by_username(bitbucket_username):
-    users = current_settings["users"]
-    if users and isinstance(users, dict) and bitbucket_username in users:
-        return users[bitbucket_username]
-
-
-def get_username_by_uid(uid):
-    uid = int(uid)
-    users = current_settings["users"]
-    if users:
-        if isinstance(users, dict):
-            for k, v in users.items():
-                if v == uid:
-                    return k
-
-
 def analyze_open_pulls(data):
     pending = []
     if "values" in data:
@@ -137,56 +121,63 @@ def reminder_loop():
 
 def activity_monitor_loop():
     while True:
-        user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
-        if "values" in user_repos:
-            for current_repo in user_repos["values"]:
-                current_repo_pulls = API.get_pulls(current_repo["owner"]["username"], current_repo["name"])
-                if "values" in current_repo_pulls:
-                    for current_pull in current_repo_pulls["values"]:
-                        try:
-                            pull_author_username = current_pull["author"]["username"]
-                            activity = API.get_pull_activity(current_repo["owner"]["username"], current_repo["name"],
-                                                             current_pull["id"])
-                            for event in analyze_comments(activity):
-                                if current_settings["ignore_comment_updates"] and event["update"]:
-                                    # Ignore edit comments
-                                    continue
-                                kind = "Edited his comment" if event["update"] else "commented"
-                                msg_date = event["create_date"] if event["update"] else event["update_date"]
-                                # There's a bug on the render side than doesn't render markdown correctly
-                                # if more than one link is on the same line
-                                # Dirty Fix here: |^| \n
-                                text = "[{0}]({1})\n" \
-                                       "{2} on [{3}/{4}]({6})\n" \
-                                       "{7}\n" \
-                                       "[View Comment]({8})\n" \
-                                       "{9}".format(event["comment_user_name"], event["comment_user_link"],
-                                                    kind,
-                                                    current_settings["bitbucket"]["repository"]["user"],
-                                                    current_repo["name"],
-                                                    event["pull_title"],
-                                                    event["pull_link"],
-                                                    event["text_content"],
-                                                    event["comment_link"],
-                                                    msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
-                                # Send Message
-                                uid = get_user_uid_by_username(pull_author_username)
-                                if uid:
-                                    user_peer = bot.users.get_user_outpeer_by_id(uid)
-                                    bot.messaging.send_message(user_peer, text)
-                                else:
-                                    log.error("User_id of {0} not found".format(pull_author_username))
+        try:
+            user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
+            if "values" in user_repos:
+                for current_repo in user_repos["values"]:
+                    current_repo_pulls = API.get_pulls(current_repo["owner"]["username"], current_repo["name"])
+                    if "values" in current_repo_pulls:
+                        for current_pull in current_repo_pulls["values"]:
+                            try:
+                                pull_author_username = current_pull["author"]["username"]
+                                activity = API.get_pull_activity(current_repo["owner"]["username"],
+                                                                 current_repo["name"],
+                                                                 current_pull["id"])
+                                for event in analyze_comments(activity):
+                                    if current_settings["ignore_comment_updates"] and event["update"]:
+                                        # Ignore edit comments
+                                        continue
+                                    kind = "Edited his comment" if event["update"] else "commented"
+                                    msg_date = event["create_date"] if event["update"] else event["update_date"]
+                                    # There's a bug on the render side than doesn't render markdown correctly
+                                    # if more than one link is on the same line
+                                    # Dirty Fix here: |^| \n
+                                    text = "[{0}]({1})\n" \
+                                           "{2} on [{3}/{4}]({6})\n" \
+                                           "{7}\n" \
+                                           "[View Comment]({8})\n" \
+                                           "{9}".format(event["comment_user_name"], event["comment_user_link"],
+                                                        kind,
+                                                        current_settings["bitbucket"]["repository"]["user"],
+                                                        current_repo["name"],
+                                                        event["pull_title"],
+                                                        event["pull_link"],
+                                                        event["text_content"],
+                                                        event["comment_link"],
+                                                        msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
+                                    # Send Message
+                                    user_peer = None
+                                    try:
+                                        user_peer = bot.users.find_user_outpeer_by_nick(pull_author_username)
+                                    except:
+                                        log.error("User_id of {0} not found".format(pull_author_username))
 
-                            time.sleep(current_settings["sleep_time_secs"])
-                        except:
-                            log.error("Exception", exc_info=True)
-                            continue
+                                    if user_peer:
+                                        bot.messaging.send_message(user_peer, text)
+
+                                time.sleep(current_settings["sleep_time_secs"])
+                            except:
+                                log.error("Exception", exc_info=True)
+                                continue
+        except:
+            log.error("Exception", exc_info=True)
+            continue
 
 
 def on_msg(*params):
     for param in params:
         log.debug("onMsg -> {}".format(param))
-        if param.peer.id == param.sender_uid and param.sender_uid in current_settings["users"].values():
+        if param.peer.id == param.sender_uid:
             try:
                 txt = param.message.textMessage.text
                 if txt.startswith("/disableReminder"):

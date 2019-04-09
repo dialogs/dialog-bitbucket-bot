@@ -1,5 +1,4 @@
 {
-  "users": {"username": 0},
   "ignore_comment_updates": false,
   "sleep_time_secs": 2.0,
   "bitbucket": {
@@ -9,7 +8,7 @@
       "password": "PASS"
     },
     "repository": {
-      "user": "OWNER_OF_REPO"
+      "user": null
     }
   }
 }

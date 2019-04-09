@@ -61,5 +61,8 @@ class BitBucketuAPI(object):
         return self._perform_get(url, self._auth)
 
     def get_repositories(self, username):
-        url = "{0}/api/2.0/repositories/{1}/".format(self._endpoint, username)
+        if username:
+            url = "{0}/api/2.0/repositories/{1}/".format(self._endpoint, username)
+        else:
+            url = "{0}/api/2.0/repositories/".format(self._endpoint)
         return self._perform_get(url, self._auth)
