@@ -28,7 +28,7 @@ class DictPersistJSON(dict):
             with open(self.filename, 'r') as fh:
                 self.update(json.load(fh, object_hook=self._object_hook))
 
-    def _dump(self):  # Save data to json file
+    def dump(self):  # Save data to json file
         with open(self.filename, 'w') as fh:
             json.dump(self, fh, default=self._default)
 
@@ -37,9 +37,9 @@ class DictPersistJSON(dict):
 
     def __setitem__(self, key, val):  # On value update save new dict to json file
         dict.__setitem__(self, key, val)
-        self._dump()
+        self.dump()
 
     def update(self, *args, **kwargs):  # Fill dict
         for k, v in dict(*args, **kwargs).items():
             self[k] = v
-        self._dump()
+        self.dump()

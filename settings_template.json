@@ -1,5 +1,5 @@
 {
-  "user_id": 0,
+  "users": {"username": 0},
   "ignore_comment_updates": false,
   "sleep_time_secs": 2.0,
   "bitbucket": {

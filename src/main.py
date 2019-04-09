@@ -15,6 +15,22 @@ from DictPersistJSON import DictPersistJSON
 from BitBucketuAPI import BitBucketuAPI
 
 
+def get_user_uid_by_username(bitbucket_username):
+    users = current_settings["users"]
+    if users and isinstance(users, dict) and bitbucket_username in users:
+        return users[bitbucket_username]
+
+
+def get_username_by_uid(uid):
+    uid = int(uid)
+    users = current_settings["users"]
+    if users:
+        if isinstance(users, dict):
+            for k, v in users.items():
+                if v == uid:
+                    return k
+
+
 def analyze_open_pulls(data):
     pending = []
     if "values" in data:
@@ -68,104 +84,141 @@ def analyze_comments(data):
     return events
 
 
-def notify_loop():
-    user_id = bot.users.get_user_outpeer_by_id(current_settings["user_id"])
-    while 1:
-        try:
-            if PERSISTENT_STORAGE["notify_time"]:  # Time is set
-                now = datetime.datetime.now(datetime.timezone.utc)
-                if now.minute == PERSISTENT_STORAGE["notify_time"].minute and now.hour == PERSISTENT_STORAGE[
-                    "notify_time"].hour and now.second == 0:  # Check time
+def reminder_loop():
+    while True:
+        users_waiting = []
 
-                    user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
-                    if "values" in user_repos:
-                        text = ""
-                        for current_repo in user_repos["values"]:
-                            # Send report to user
-                            api_res = API.get_pulls(current_settings["bitbucket"]["repository"]["user"],
-                                                    current_repo["name"])
-                            pending = analyze_open_pulls(api_res)
-                            if len(pending) > 0:
-                                if text == "":
-                                    text += "Daily reminder\n"
-                                text += "Pending pull requests for {0}/{1}\n".format(
-                                    current_settings["bitbucket"]["repository"]["user"],
-                                    current_repo["name"])
-                                for p_title, p_url in pending:
-                                    text += ">[{0}]({1})\n".format(p_title, p_url)
-                        if text != "":
-                            bot.messaging.send_message(user_id, text)
-        except:
-            log.error("Exception", exc_info=True)
-            continue
+        # Checking local data is faster than an API request
+        for user_uid, user_opts in PERSISTENT_STORAGE["users"].items():
+            try:
+                if user_opts["notify_time"]:  # Time is set
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    preferred_time = user_opts["notify_time"]
+                    # Check time
+                    if now.minute == preferred_time.minute and now.hour == preferred_time.hour and now.second == 0:
+                        users_waiting.append(user_uid)
+            except:
+                log.error("Exception", exc_info=True)
+                continue
+        # if at least 1 user is expecting a reminder right now, perform API requests
+        if users_waiting:
+            try:
+                # Generate Reminder text
+                text = ""
+                user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
+                if "values" in user_repos:
+                    for current_repo in user_repos["values"]:
+                        api_res = API.get_pulls(current_settings["bitbucket"]["repository"]["user"],
+                                                current_repo["name"])
+                        pending = analyze_open_pulls(api_res)
+                        if len(pending) > 0:
+                            if text == "":
+                                text += "Daily reminder\n"
+                            text += "Pending pull requests for {0}/{1}\n".format(
+                                current_settings["bitbucket"]["repository"]["user"],
+                                current_repo["name"])
+                            for p_title, p_url in pending:
+                                text += ">[{0}]({1})\n".format(p_title, p_url)
+
+                if text != "":
+                    for user_uid in users_waiting:
+                        try:
+                            user_peer = bot.users.get_user_outpeer_by_id(int(user_uid))
+                            if user_peer:
+                                bot.messaging.send_message(user_peer, text)
+                        except:
+                            log.error("Exception", exc_info=True)
+                            continue
+            except:
+                log.error("Exception", exc_info=True)
+                continue
         time.sleep(0.8)
 
 
-def monitor_loop():
-    user_id = bot.users.get_user_outpeer_by_id(current_settings["user_id"])
-    while 1:
+def activity_monitor_loop():
+    while True:
         user_repos = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
         if "values" in user_repos:
             for current_repo in user_repos["values"]:
-                try:
-                    act = API.get_pulls_activity(current_settings["bitbucket"]["repository"]["user"],
-                                                 current_repo["name"])
-                    for event in analyze_comments(act):
-                        if current_settings["ignore_comment_updates"] and event["update"]:
-                            # Ignore edit comments
-                            continue
-                        kind = "Edited his comment" if event["update"] else "commented"
-                        msg_date = event["create_date"] if event["update"] else event["update_date"]
-                        # There's a bug on the render side than doesn't render markdown correctly
-                        # if more than one link is on the same line
-                        # Dirty Fix here: |^| \n
-                        text = "[{0}]({1})\n" \
-                               "{2} on [{3}/{4}]({6})\n" \
-                               "{7}\n" \
-                               "[View Comment]({8})\n" \
-                               "{9}".format(event["comment_user_name"], event["comment_user_link"],
-                                            kind,
-                                            current_settings["bitbucket"]["repository"]["user"],
-                                            current_repo["name"],
-                                            event["pull_title"],
-                                            event["pull_link"],
-                                            event["text_content"],
-                                            event["comment_link"],
-                                            msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
-                        bot.messaging.send_message(user_id, text)
+                current_repo_pulls = API.get_pulls(current_repo["owner"]["username"], current_repo["name"])
+                if "values" in current_repo_pulls:
+                    for current_pull in current_repo_pulls["values"]:
+                        try:
+                            pull_author_username = current_pull["author"]["username"]
+                            activity = API.get_pull_activity(current_repo["owner"]["username"], current_repo["name"],
+                                                             current_pull["id"])
+                            for event in analyze_comments(activity):
+                                if current_settings["ignore_comment_updates"] and event["update"]:
+                                    # Ignore edit comments
+                                    continue
+                                kind = "Edited his comment" if event["update"] else "commented"
+                                msg_date = event["create_date"] if event["update"] else event["update_date"]
+                                # There's a bug on the render side than doesn't render markdown correctly
+                                # if more than one link is on the same line
+                                # Dirty Fix here: |^| \n
+                                text = "[{0}]({1})\n" \
+                                       "{2} on [{3}/{4}]({6})\n" \
+                                       "{7}\n" \
+                                       "[View Comment]({8})\n" \
+                                       "{9}".format(event["comment_user_name"], event["comment_user_link"],
+                                                    kind,
+                                                    current_settings["bitbucket"]["repository"]["user"],
+                                                    current_repo["name"],
+                                                    event["pull_title"],
+                                                    event["pull_link"],
+                                                    event["text_content"],
+                                                    event["comment_link"],
+                                                    msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
+                                # Send Message
+                                uid = get_user_uid_by_username(pull_author_username)
+                                if uid:
+                                    user_peer = bot.users.get_user_outpeer_by_id(uid)
+                                    bot.messaging.send_message(user_peer, text)
+                                else:
+                                    log.error("User_id of {0} not found".format(pull_author_username))
 
-                    time.sleep(current_settings["sleep_time_secs"])
-                except:
-                    log.error("Exception", exc_info=True)
-                    continue
+                            time.sleep(current_settings["sleep_time_secs"])
+                        except:
+                            log.error("Exception", exc_info=True)
+                            continue
 
 
 def on_msg(*params):
     for param in params:
         log.debug("onMsg -> {}".format(param))
-        if param.peer.id == param.sender_uid and param.sender_uid == current_settings["user_id"]:
-            txt = param.message.textMessage.text
+        if param.peer.id == param.sender_uid and param.sender_uid in current_settings["users"].values():
+            try:
+                txt = param.message.textMessage.text
+                if txt.startswith("/disableReminder"):
+                    log.debug("disableReminder")
+                    if str(param.sender_uid) in PERSISTENT_STORAGE["users"]:
+                        del PERSISTENT_STORAGE["users"][str(param.sender_uid)]
+                        PERSISTENT_STORAGE.dump()  # operations on child objects requires manual dump
+                    bot.messaging.send_message(param.peer, "Success. I will not send you the reminder anymore.")
 
-            if txt.startswith("/disableReminder"):
-                log.debug("disableReminder")
-                PERSISTENT_STORAGE["notify_time"] = None
-                bot.messaging.send_message(param.peer, "Success. I will not send you the reminder anymore.")
-
-            elif txt.startswith("/setReminder"):
-                log.debug("setTime")
-                try:
+                elif txt.startswith("/setReminder"):
+                    log.debug("setTime")
                     stext = txt[txt.find(" ") + 1:]
                     reminder_time = datetime.datetime.strptime(stext, "%H:%M %z")
-                    PERSISTENT_STORAGE["notify_time"] = reminder_time.astimezone(datetime.timezone.utc)
+                    PERSISTENT_STORAGE["users"][str(param.sender_uid)] = {
+                        "notify_time": reminder_time.astimezone(datetime.timezone.utc)
+                    }
+                    PERSISTENT_STORAGE.dump()  # operations on child objects requires manual dump
                     bot.messaging.send_message(param.peer,
                                                "Success, ok I will send you a reminder every day at {0}".format(
                                                    reminder_time.strftime("%H:%M:%S %z")))
-                except:
-                    bot.messaging.send_message(param.peer, "Failed. see /help")
-                    log.error("Exception", exc_info=True)
-                    continue
-            else:
-                bot.messaging.send_message(param.peer, HELP_TEXT)
+
+                elif txt.startswith("/help"):
+                    bot.messaging.send_message(param.peer, HELP_TEXT)
+
+                else:
+                    bot.messaging.send_message(param.peer, "Command not found.")
+                    bot.messaging.send_message(param.peer, HELP_TEXT)
+
+            except:
+                bot.messaging.send_message(param.peer, "Failed. see /help")
+                log.error("Exception", exc_info=True)
+                continue
 
 
 if __name__ == '__main__':
@@ -190,6 +243,8 @@ if __name__ == '__main__':
 
     try:
         PERSISTENT_STORAGE = DictPersistJSON(STORAGE_PATH)
+        if "users" not in PERSISTENT_STORAGE or not PERSISTENT_STORAGE["users"]:
+            PERSISTENT_STORAGE["users"] = {}
         if "last_time" not in PERSISTENT_STORAGE or not PERSISTENT_STORAGE["last_time"]:
             # Handle only new messages
             PERSISTENT_STORAGE["last_time"] = datetime.datetime.now(datetime.timezone.utc)
@@ -221,8 +276,8 @@ if __name__ == '__main__':
                 grpc.ssl_channel_credentials(),  # SSL credentials (empty by default!)
                 os.environ.get('BOT_TOKEN')  # bot token
             )
-            threading.Thread(target=monitor_loop).start()
-            threading.Thread(target=notify_loop).start()
+            threading.Thread(target=activity_monitor_loop).start()
+            threading.Thread(target=reminder_loop).start()
             bot.messaging.on_message(on_msg)  # Blocking
         except:
             log.error("Can't initialize bot", exc_info=True)

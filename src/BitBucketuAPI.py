@@ -22,7 +22,6 @@ class BitBucketuAPI(object):
         Perform API GET request to bitbucket server
         :param username: repository owner username
         :param reponame: repository name
-        :param auth: tuple (username,password) of a user with access to the repository
         :return: dict parsed json api response
         """
         url = "{0}/api/2.0/repositories/{1}/{2}/pullrequests/activity".format(self._endpoint, username, reponame)
@@ -33,13 +32,34 @@ class BitBucketuAPI(object):
         Perform API GET request to bitbucket server
         :param username: repository owner username
         :param reponame: repository name
-        :param auth: tuple (username,password) of a user with access to the repository
         :return: dict parsed json api response
         """
         url = "{0}/api/2.0/repositories/{1}/{2}/pullrequests".format(self._endpoint, username, reponame)
         return self._perform_get(url, self._auth)
 
+    def get_pull(self, username, reponame, pull_id):
+        """
+        Perform API GET request to bitbucket server
+        :param username: repository owner username
+        :param reponame: repository name
+        :param pull_id: id of the pullrequest
+        :return: dict parsed json api response
+        """
+        url = "{0}/api/2.0/repositories/{1}/{2}/pullrequests/{3}".format(self._endpoint, username, reponame, pull_id)
+        return self._perform_get(url, self._auth)
+
+    def get_pull_activity(self, username, reponame, pull_id):
+        """
+        Perform API GET request to bitbucket server
+        :param username: repository owner username
+        :param reponame: repository name
+        :param pull_id: id of the pullrequest
+        :return: dict parsed json api response
+        """
+        url = "{0}/api/2.0/repositories/{1}/{2}/pullrequests/{3}/activity".format(self._endpoint, username,
+                                                                                  reponame, pull_id)
+        return self._perform_get(url, self._auth)
+
     def get_repositories(self, username):
         url = "{0}/api/2.0/repositories/{1}/".format(self._endpoint, username)
         return self._perform_get(url, self._auth)
-
