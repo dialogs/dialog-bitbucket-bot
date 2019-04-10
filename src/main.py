@@ -12,23 +12,51 @@ import grpc
 from dialog_bot_sdk.bot import DialogBot
 
 from DictPersistJSON import DictPersistJSON
-from BitBucketuAPI import BitBucketuAPI
 
 
-def analyze_comments(data):
+def handle_relevant_comment(data, pull_author_username):
+    # There's a bug on the render side than doesn't render markdown correctly
+    # if more than one link is on the same line
+    # Dirty Fix here: |^| \n
+    text = "[{username}]({user_link})\n" \
+           "{action} on [{repo_name}]({repo_link})\n" \
+           "{text_content}\n" \
+           "[View Comment]({comment_link})\n" \
+           "{msg_date}".format(**data)
+    # Send Message
+    user_peer = None
+    try:
+        user_peer = bot.users.find_user_outpeer_by_nick(pull_author_username)
+    except:
+        log.error("User_id of {0} not found".format(pull_author_username))
+    if user_peer:
+        bot.messaging.send_message(user_peer, text)
+
+
+def analyze_comments(data, server_api=False):
     max_time = None
     for current in data:
         if "comment" in current:  # Yes there are comments on this pull
             try:
                 # Retrieve some useful data from API response
-                evt = {"pull_title": current["comment"]["pullrequest"]["title"],
-                       "pull_link": current["comment"]["pullrequest"]["links"]["html"]["href"],
-                       "comment_user_name": current["comment"]["user"]["display_name"],
-                       "comment_user_link": current["comment"]["user"]["links"]["html"]["href"],
-                       "text_content": current["comment"]["content"]["raw"],
-                       "comment_link": current["comment"]["links"]["html"]["href"],
-                       "create_date": datetime.datetime.fromisoformat(current["comment"]["created_on"]),
-                       "update_date": datetime.datetime.fromisoformat(current["comment"]["updated_on"])}
+                if server_api:
+                    evt = {"comment_id": current["comment"]["id"],
+                           "username": current["comment"]["author"]["displayName"],
+                           "user_link": current["comment"]["author"]["links"]["self"][0]["href"],
+                           "text_content": current["comment"]["text"],
+                           "create_date": datetime.datetime.fromtimestamp(current["comment"]["createdDate"] / 1000,
+                                                                          tz=datetime.timezone.utc),
+                           "update_date": datetime.datetime.fromtimestamp(current["comment"]["updatedDate"] / 1000,
+                                                                          tz=datetime.timezone.utc)}
+                else:
+                    evt = {"username": current["comment"]["user"]["display_name"],
+                           "user_link": current["comment"]["user"]["links"]["html"]["href"],
+                           "pull_title": current["comment"]["pullrequest"]["title"],
+                           "pull_link": current["comment"]["pullrequest"]["links"]["html"]["href"],
+                           "text_content": current["comment"]["content"]["raw"],
+                           "comment_link": current["comment"]["links"]["html"]["href"],
+                           "create_date": datetime.datetime.fromisoformat(current["comment"]["created_on"]),
+                           "update_date": datetime.datetime.fromisoformat(current["comment"]["updated_on"])}
 
                 # if comment is posted after a predefined time it's a NEW comment
                 if evt["create_date"] > PERSISTENT_STORAGE["last_time"]:
@@ -78,22 +106,33 @@ def reminder_loop():
                 # Generate Reminder text
                 text = ""
                 pending = []
-                for current_repo in API.get_repositories(current_settings["bitbucket"]["repository"]["user"]):
+                server_api = current_settings["bitbucket"]["server_api"]
+                if server_api:
+                    repo_gen = API.get_repositories(current_settings["bitbucket"]["project"]["name"])
+                else:
+                    repo_gen = API.get_repositories(current_settings["bitbucket"]["repository"]["user"])
+
+                for current_repo in repo_gen:
                     # Analyze_open_pulls
-                    for current_pull in API.get_pulls(current_settings["bitbucket"]["repository"]["user"],
-                                                      current_repo["name"]):
+                    if server_api:
+                        pull_gen = API.get_pulls(current_repo["project"]["key"], current_repo["slug"])
+                    else:
+                        pull_gen = API.get_pulls(current_repo["owner"]["username"], current_repo["name"])
+                    for current_pull in pull_gen:
                         if current_pull["state"] == "OPEN":
-                            pending.append((current_pull["title"], current_pull["links"]["html"]["href"]))
+                            if server_api:
+                                pull_link = current_pull["links"]["self"][0]["href"]
+                            else:
+                                pull_link = current_pull["links"]["html"]["href"]
+                            pending.append((current_pull["title"], pull_link))
 
                     if len(pending) > 0:
                         if text == "":
                             text += "Daily reminder\n"
-                        text += "Pending pull requests for {0}/{1}\n".format(
-                            current_settings["bitbucket"]["repository"]["user"],
-                            current_repo["name"])
+                        text += "Pending pull requests for {0}\n".format(current_repo["name"])
                         for p_title, p_url in pending:
                             text += ">[{0}]({1})\n".format(p_title, p_url)
-
+                # Send reminder to users
                 if text != "":
                     for user_uid in users_waiting:
                         try:
@@ -109,7 +148,44 @@ def reminder_loop():
         time.sleep(0.8)
 
 
-def activity_monitor_loop():
+def activity_monitor_loop_server():
+    while True:
+        try:
+            for current_repo in API.get_repositories(current_settings["bitbucket"]["project"]["name"]):
+                for current_pull in API.get_pulls(current_repo["project"]["key"], current_repo["slug"]):
+                    try:
+                        pull_author_username = current_pull["author"]["user"]["name"]
+                        # API CALL Limited to 1 Page (for recent events)
+                        activity = API.get_pulls_activity(current_repo["project"]["key"], current_repo["slug"],
+                                                          current_pull["id"], max_pages=1)
+                        for event in analyze_comments(activity, True):
+                            if current_settings["ignore_comment_updates"] and event["update"]:
+                                # Ignore edit comments
+                                continue
+                            msg_date = (event["create_date"] if event["update"] else event["update_date"])
+                            tmp = event
+                            tmp["action"] = "Edited his comment" if event["update"] else "commented"
+                            tmp["repo_name"] = current_repo["name"]
+                            tmp["repo_link"] = current_repo["links"]["self"][0]["href"]
+                            tmp["msg_date"] = msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z")
+                            tmp["pull_title"] = current_pull["title"]
+                            tmp["pull_link"] = current_pull["links"]["self"][0]["href"]
+                            tmp["comment_link"] = API.format_comment_url(current_repo["project"]["key"],
+                                                                      current_repo["slug"],
+                                                                      current_pull["id"], event["comment_id"])
+
+                            handle_relevant_comment(tmp, pull_author_username)
+
+                        time.sleep(current_settings["sleep_time_secs"])
+                    except:
+                        log.error("Exception", exc_info=True)
+                        continue
+        except:
+            log.error("Exception", exc_info=True)
+            continue
+
+
+def activity_monitor_loop_cloud():
     while True:
         try:
             for current_repo in API.get_repositories(current_settings["bitbucket"]["repository"]["user"]):
@@ -124,33 +200,13 @@ def activity_monitor_loop():
                             if current_settings["ignore_comment_updates"] and event["update"]:
                                 # Ignore edit comments
                                 continue
-                            kind = "Edited his comment" if event["update"] else "commented"
                             msg_date = event["create_date"] if event["update"] else event["update_date"]
-                            # There's a bug on the render side than doesn't render markdown correctly
-                            # if more than one link is on the same line
-                            # Dirty Fix here: |^| \n
-                            text = "[{0}]({1})\n" \
-                                   "{2} on [{3}/{4}]({6})\n" \
-                                   "{7}\n" \
-                                   "[View Comment]({8})\n" \
-                                   "{9}".format(event["comment_user_name"], event["comment_user_link"],
-                                                kind,
-                                                current_settings["bitbucket"]["repository"]["user"],
-                                                current_repo["name"],
-                                                event["pull_title"],
-                                                event["pull_link"],
-                                                event["text_content"],
-                                                event["comment_link"],
-                                                msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z"))
-                            # Send Message
-                            user_peer = None
-                            try:
-                                user_peer = bot.users.find_user_outpeer_by_nick(pull_author_username)
-                            except:
-                                log.error("User_id of {0} not found".format(pull_author_username))
-
-                            if user_peer:
-                                bot.messaging.send_message(user_peer, text)
+                            tmp = event
+                            tmp["action"] = "Edited his comment" if event["update"] else "commented"
+                            tmp["repo_name"] = current_repo["name"]
+                            tmp["repo_link"] = current_repo["links"]["self"]["href"]
+                            tmp["msg_date"] = msg_date.strftime("%Y-%m-%d - %H:%M:%S %Z")
+                            handle_relevant_comment(tmp, pull_author_username)
 
                         time.sleep(current_settings["sleep_time_secs"])
                     except:
@@ -241,6 +297,10 @@ if __name__ == '__main__':
             sys.exit(1)
 
         try:
+            if current_settings["bitbucket"]["server_api"]:
+                from BitBucketServeruAPI import BitBucketServeruAPI as BitBucketuAPI
+            else:
+                from BitBucketClouduAPI import BitBucketClouduAPI as BitBucketuAPI
             API = BitBucketuAPI(current_settings["bitbucket"]["endpoint"],
                                 auth=(current_settings["bitbucket"]["auth"]["username"],
                                       current_settings["bitbucket"]["auth"]["password"]))
@@ -254,7 +314,11 @@ if __name__ == '__main__':
                 grpc.ssl_channel_credentials(),  # SSL credentials (empty by default!)
                 os.environ.get('BOT_TOKEN')  # bot token
             )
-            threading.Thread(target=activity_monitor_loop).start()
+            if current_settings["bitbucket"]["server_api"]:
+                threading.Thread(target=activity_monitor_loop_server).start()
+            else:
+                threading.Thread(target=activity_monitor_loop_cloud).start()
+
             threading.Thread(target=reminder_loop).start()
             bot.messaging.on_message(on_msg)  # Blocking
         except:
