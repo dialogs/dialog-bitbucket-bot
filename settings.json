@@ -2,7 +2,7 @@
   "ignore_comment_updates": false,
   "sleep_time_secs": 2.0,
   "bitbucket": {
-    "endpoint": "http://localhost:7990",
+    "endpoint": "https://bitbucket.transmit.im",
     "server_api": true,
     "project": {
       "name": null

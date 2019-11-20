@@ -171,8 +171,8 @@ def activity_monitor_loop_server():
                             tmp["pull_title"] = current_pull["title"]
                             tmp["pull_link"] = current_pull["links"]["self"][0]["href"]
                             tmp["comment_link"] = API.format_comment_url(current_repo["project"]["key"],
-                                                                      current_repo["slug"],
-                                                                      current_pull["id"], event["comment_id"])
+                                                                         current_repo["slug"],
+                                                                         current_pull["id"], event["comment_id"])
 
                             handle_relevant_comment(tmp, pull_author_username)
 
@@ -256,8 +256,8 @@ def on_msg(*params):
 
 
 if __name__ == '__main__':
-    SETTINGS_PATH = "../settings.json"
-    STORAGE_PATH = "../storage.json"
+    SETTINGS_PATH = os.path.dirname(__file__) + "/../settings.json"
+    STORAGE_PATH = os.path.dirname(__file__) + "/../storage.json"
 
     log = logging.getLogger("BitBucketBot")
     log.setLevel(logging.INFO)
@@ -302,8 +302,8 @@ if __name__ == '__main__':
             else:
                 from BitBucketClouduAPI import BitBucketClouduAPI as BitBucketuAPI
             API = BitBucketuAPI(current_settings["bitbucket"]["endpoint"],
-                                auth=(current_settings["bitbucket"]["auth"]["username"],
-                                      current_settings["bitbucket"]["auth"]["password"]))
+                                auth=(os.environ.get('USERNAME'),
+                                      os.environ.get('PASSWORD')))
         except:
             log.error("API init", exc_info=True)
             sys.exit(1)
